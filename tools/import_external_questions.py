@@ -34,6 +34,18 @@ CHECKED_AT = date.today().isoformat()
 OPENFOOTBALL_URL = "https://raw.githubusercontent.com/openfootball/worldcup/master/2026--canada-usa-mexico/cup.txt"
 OPENFOOTBALL_1994_URL = "https://raw.githubusercontent.com/openfootball/worldcup/master/1994--usa/cup.txt"
 CHAMPIONS_LEAGUE_REPO = "https://github.com/openfootball/champions-league"
+
+
+def remove_narrow_score_questions(questions: list[dict]) -> list[dict]:
+    """Drop low-value questions whose only task is recalling an exact score."""
+    score_markers = (
+        "Как завершился матч ",
+        "какой счёт был в матче ",
+    )
+    return [
+        question for question in questions
+        if not any(question.get("question", "").startswith(marker) for marker in score_markers)
+    ]
 OPENTDB_URL = "https://opentdb.com/api.php?" + urlencode({"amount": 50, "category": 21, "type": "multiple", "encode": "url3986"})
 FOOTBALL_DATASETS_REPO = "https://github.com/datasets/football-datasets"
 FOOTBALL_LEAGUES = {
@@ -237,9 +249,13 @@ def import_champions_league() -> list[dict]:
         r"^\s+(?:\d{1,2}:\d{2}\s+)?(.+?)\s+v\s+(.+?)\s+(\d+[-–]\d+)"
     )
     questions = []
+    finals = []
     for path in sorted(Path(LOCAL_CHAMPIONS_LEAGUE).glob("*/cl.txt")):
         season = path.parent.name
+        stage = ""
         for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip().startswith("▪"):
+                stage = line.strip()
             match = pattern.match(line)
             if not match:
                 continue
@@ -248,6 +264,8 @@ def import_champions_league() -> list[dict]:
             away = re.sub(r"\s*\([A-Z]{3}\)$", "", away)
             if not home or not away:
                 continue
+            if stage in ("▪ Final", "▪ Finals, Final"):
+                finals.append((season, home, away))
             score = score.replace("–", "-")
             home_score, away_score = score.split("-", 1)
             options = [score]
@@ -269,6 +287,30 @@ def import_champions_league() -> list[dict]:
                 "category": "Football / UEFA Champions League",
                 "source_id": f"champions-league:{season}:{home}:{away}:{score}",
             })
+    finalist_options = [f"{home} — {away}" for _, home, away in finals]
+    for season, home, away in finals:
+        correct = f"{home} — {away}"
+        options = [correct]
+        for distractor in finalist_options:
+            if distractor != correct and distractor not in options:
+                options.append(distractor)
+            if len(options) == 4:
+                break
+        if len(options) < 4:
+            continue
+        questions.append({
+            "question": f"Какие команды играли в финале Лиги чемпионов сезона {season}?",
+            "options": options,
+            "correct": 0,
+            "explanation": f"В финале сезона {season} встретились {home} и {away}.",
+            "answer_verified": True,
+            "source": "openfootball/champions-league",
+            "source_url": f"{CHAMPIONS_LEAGUE_REPO}/blob/master/{season}/cl.txt",
+            "license": "CC0-1.0 (public domain)",
+            "checked_at": CHECKED_AT,
+            "category": "Football / UEFA Champions League / Finals",
+            "source_id": f"champions-league:{season}:finalists",
+        })
     return questions
 
 
@@ -292,6 +334,7 @@ def main() -> int:
     imported = (json.loads(Path(LOCAL_BASE).read_text(encoding="utf-8")) if LOCAL_BASE else
                 import_opentdb() + import_openfootball() + import_historical_leagues() + import_channel_inspired())
     imported += import_champions_league()
+    imported = remove_narrow_score_questions(imported)
     questions, report = deduplicate_questions(imported)
     if report["invalid"] or not questions:
         raise SystemExit(f"Quality check failed: {report}")

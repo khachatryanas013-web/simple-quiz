@@ -196,6 +196,7 @@ def _external_questions() -> list[dict]:
     questions = [
         question for question in questions
         if len(re.findall(r"[А-Яа-яЁё]", question["question"])) >= 4
+        and not question["question"].startswith(("Как завершился матч ", "какой счёт был в матче "))
     ]
     return questions
 
