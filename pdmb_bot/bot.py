@@ -10,6 +10,8 @@ from zoneinfo import ZoneInfo
 import requests
 import urllib3
 from aiogram import Bot, Dispatcher, F, types
+from aiogram.enums import ChatType
+from aiogram.exceptions import TelegramForbiddenError
 from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -50,13 +52,30 @@ dispatcher = Dispatcher()
 training_sessions: dict[int, dict] = {}
 
 
-def training_keyboard() -> InlineKeyboardMarkup:
+async def training_deep_link() -> str:
+    me = await bot.get_me()
+    return f"https://t.me/{me.username}?start=training"
+
+
+async def training_keyboard(private: bool = False) -> InlineKeyboardMarkup:
     keyboard = InlineKeyboardBuilder()
+
+    if private:
+        keyboard.add(
+            InlineKeyboardButton(
+                text="🧠 Тренировка в Telegram",
+                callback_data="training:start",
+            )
+        )
+    else:
+        keyboard.add(
+            InlineKeyboardButton(
+                text="🧠 Тренировка в Telegram",
+                url=await training_deep_link(),
+            )
+        )
+
     keyboard.add(
-        InlineKeyboardButton(
-            text="🧠 Тренировка в Telegram",
-            callback_data="training:start",
-        ),
         InlineKeyboardButton(
             text="⚽ Открыть командный тренажёр",
             url=TRAINING_URL,
@@ -91,6 +110,24 @@ async def send_training_question(chat_id: int, user_id: int) -> None:
         parse_mode="HTML",
         reply_markup=question_keyboard(question),
     )
+
+
+async def start_training(chat_id: int, user_id: int) -> None:
+    training_sessions[user_id] = {
+        "index": 0,
+        "score": 0,
+        "questions": build_training_questions(),
+    }
+    await bot.send_message(
+        chat_id=chat_id,
+        text=(
+            "🧠 <b>Смешанная тренировка «Симпл Квиз»</b>\n"
+            "Вопросы случайно собраны из всех разделов тренажёра. "
+            "Выберите правильный ответ — в конце бот покажет результат."
+        ),
+        parse_mode="HTML",
+    )
+    await send_training_question(chat_id, user_id)
 
 
 def parse_quiz_schedule() -> str:
@@ -215,59 +252,103 @@ def parse_quiz_schedule() -> str:
         return f"❌ Ошибка при парсинге: {error}"
 
 
-async def send_quiz_schedule(chat_id: int = CHAT_ID) -> None:
+async def send_quiz_schedule(chat_id: int = CHAT_ID, private: bool = False) -> None:
     message = await asyncio.to_thread(parse_quiz_schedule)
     await bot.send_message(
         chat_id=chat_id,
         text=message,
         parse_mode="HTML",
-        reply_markup=training_keyboard(),
+        reply_markup=await training_keyboard(private=private),
     )
     logging.info("Расписание отправлено в чат %s", chat_id)
 
 
 @dispatcher.message(CommandStart())
-@dispatcher.message(Command("help"))
 async def handle_start(message: types.Message) -> None:
+    if message.chat.type != ChatType.PRIVATE:
+        return
+
+    parts = (message.text or "").split(maxsplit=1)
+    payload = parts[1].strip().lower() if len(parts) > 1 else ""
+
+    if payload == "training":
+        await start_training(message.chat.id, message.from_user.id)
+        return
+
     await message.answer(
         "Бот показывает расписание спортивных квизов и открывает командный "
         "тренажёр.\n\n"
         "/training — открыть тренажёр\n"
         "/schedule — получить расписание",
-        reply_markup=training_keyboard(),
+        reply_markup=await training_keyboard(private=True),
+    )
+
+
+@dispatcher.message(Command("help"))
+async def handle_help(message: types.Message) -> None:
+    if message.chat.type != ChatType.PRIVATE:
+        return
+
+    await message.answer(
+        "Бот показывает расписание спортивных квизов и открывает командный "
+        "тренажёр.\n\n"
+        "/training — открыть тренажёр\n"
+        "/schedule — получить расписание",
+        reply_markup=await training_keyboard(private=True),
     )
 
 
 @dispatcher.message(Command("training", "trainer"))
 async def handle_training(message: types.Message) -> None:
+    if message.chat.type != ChatType.PRIVATE:
+        try:
+            await bot.send_message(
+                chat_id=message.from_user.id,
+                text=(
+                    "Командный тренажёр «Симпл Квиз». Выберите формат:\n\n"
+                    "🧠 тренировка прямо в Telegram с подсчётом результата;\n"
+                    "⚽ HTML-версия с карточками по всем разделам."
+                ),
+                reply_markup=await training_keyboard(private=True),
+            )
+        except TelegramForbiddenError:
+            logging.info(
+                "Не удалось написать пользователю %s в личку: он ещё не запускал бота",
+                message.from_user.id,
+            )
+        return
+
     await message.answer(
         "Командный тренажёр «Симпл Квиз». Выберите формат:\n\n"
         "🧠 тренировка прямо в Telegram с подсчётом результата;\n"
         "⚽ HTML-версия с карточками по всем разделам.",
-        reply_markup=training_keyboard(),
+        reply_markup=await training_keyboard(private=True),
     )
 
 
 @dispatcher.callback_query(F.data == "training:start")
 async def handle_training_start(callback: CallbackQuery) -> None:
+    if callback.message.chat.type != ChatType.PRIVATE:
+        await callback.answer(
+            "Тренировка запускается только в личном чате с ботом. Нажмите новую кнопку в расписании.",
+            show_alert=True,
+        )
+        return
+
     user_id = callback.from_user.id
-    training_sessions[user_id] = {
-        "index": 0,
-        "score": 0,
-        "questions": build_training_questions(),
-    }
     await callback.answer("Тренировка началась")
-    await callback.message.answer(
-        "🧠 <b>Смешанная тренировка «Симпл Квиз»</b>\n"
-        "Вопросы случайно собраны из всех разделов тренажёра. "
-        "Выберите правильный ответ — в конце бот покажет результат.",
-        parse_mode="HTML",
-    )
-    await send_training_question(callback.message.chat.id, user_id)
+    await start_training(callback.message.chat.id, user_id)
 
 
 @dispatcher.callback_query(F.data.startswith("training:answer:"))
 async def handle_training_answer(callback: CallbackQuery) -> None:
+    if callback.message.chat.type != ChatType.PRIVATE:
+        await callback.answer(
+            "Ответы принимаются только в личном чате с ботом.",
+            show_alert=True,
+        )
+        return
+
     user_id = callback.from_user.id
     session = training_sessions.get(user_id)
     if not session:
@@ -303,7 +384,7 @@ async def handle_training_answer(callback: CallbackQuery) -> None:
             f"Результат: <b>{score}/{total}</b>\n"
             f"HTML-версия доступна по кнопке ниже.",
             parse_mode="HTML",
-            reply_markup=training_keyboard(),
+            reply_markup=await training_keyboard(private=True),
         )
         return
 
@@ -312,7 +393,10 @@ async def handle_training_answer(callback: CallbackQuery) -> None:
 
 @dispatcher.message(Command("schedule"))
 async def handle_schedule(message: types.Message) -> None:
-    await send_quiz_schedule(message.chat.id)
+    await send_quiz_schedule(
+        message.chat.id,
+        private=message.chat.type == ChatType.PRIVATE,
+    )
 
 
 async def weekly_schedule_loop() -> None:
