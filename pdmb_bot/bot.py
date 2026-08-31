@@ -63,42 +63,18 @@ WEEKDAY_MAP = {
 }
 
 MONTH_MAP = {
-    "янв": 1,
-    "январь": 1,
-    "января": 1,
-    "фев": 2,
-    "февраль": 2,
-    "февраля": 2,
-    "мар": 3,
-    "март": 3,
-    "марта": 3,
-    "апр": 4,
-    "апрель": 4,
-    "апреля": 4,
-    "май": 5,
-    "мая": 5,
-    "июн": 6,
-    "июнь": 6,
-    "июня": 6,
-    "июл": 7,
-    "июль": 7,
-    "июля": 7,
-    "авг": 8,
-    "август": 8,
-    "августа": 8,
-    "сен": 9,
-    "сент": 9,
-    "сентябрь": 9,
-    "сентября": 9,
-    "окт": 10,
-    "октябрь": 10,
-    "октября": 10,
-    "ноя": 11,
-    "ноябрь": 11,
-    "ноября": 11,
-    "дек": 12,
-    "декабрь": 12,
-    "декабря": 12,
+    "янв": 1, "январь": 1, "января": 1,
+    "фев": 2, "февраль": 2, "февраля": 2,
+    "мар": 3, "март": 3, "марта": 3,
+    "апр": 4, "апрель": 4, "апреля": 4,
+    "май": 5, "мая": 5,
+    "июн": 6, "июнь": 6, "июня": 6,
+    "июл": 7, "июль": 7, "июля": 7,
+    "авг": 8, "август": 8, "августа": 8,
+    "сен": 9, "сент": 9, "сентябрь": 9, "сентября": 9,
+    "окт": 10, "октябрь": 10, "октября": 10,
+    "ноя": 11, "ноябрь": 11, "ноября": 11,
+    "дек": 12, "декабрь": 12, "декабря": 12,
 }
 
 
@@ -109,7 +85,6 @@ async def training_deep_link() -> str:
 
 async def training_keyboard(private: bool = False) -> InlineKeyboardMarkup:
     keyboard = InlineKeyboardBuilder()
-
     if private:
         keyboard.add(
             InlineKeyboardButton(
@@ -198,14 +173,17 @@ def month_number(month_text: str) -> int | None:
     normalized = month_text.strip().lower().replace(".", "")
     if normalized in MONTH_MAP:
         return MONTH_MAP[normalized]
-
     for alias, number in MONTH_MAP.items():
         if len(alias) >= 3 and normalized.startswith(alias):
             return number
     return None
 
 
-def resolve_event_date(day_text: str, month_text: str, reference: date | None = None) -> date | None:
+def resolve_event_date(
+    day_text: str,
+    month_text: str,
+    reference: date | None = None,
+) -> date | None:
     if not day_text.isdigit():
         return None
 
@@ -280,7 +258,11 @@ def fetch_quiz_events() -> list[dict]:
             break
 
         location_link = item.find("a", class_="location-href")
-        location = location_link.get_text(strip=True) if location_link else "Место не указано"
+        location = (
+            location_link.get_text(strip=True)
+            if location_link
+            else "Место не указано"
+        )
 
         price_text = "Цена не указана"
         for paragraph in desc_list:
@@ -343,9 +325,10 @@ def parse_quiz_schedule() -> str:
 
 
 def weekly_events(events: list[dict], reference: date | None = None) -> list[dict]:
+    """Квизы с понедельника текущей недели до следующего понедельника включительно."""
     reference = reference or datetime.now(MOSCOW_TZ).date()
     week_start = reference - timedelta(days=reference.weekday())
-    week_end = week_start + timedelta(days=6)
+    week_end = week_start + timedelta(days=7)
 
     result = [
         event
@@ -356,7 +339,11 @@ def weekly_events(events: list[dict], reference: date | None = None) -> list[dic
 
     return sorted(
         result,
-        key=lambda event: (event["event_date"], event.get("time", "23:59"), event["name"]),
+        key=lambda event: (
+            event["event_date"],
+            event.get("time", "23:59"),
+            event["name"],
+        ),
     )
 
 
@@ -371,20 +358,30 @@ async def send_weekly_poll(
     events: list[dict],
     chat_id: int = CHAT_ID,
     reference: date | None = None,
-) -> None:
+) -> bool:
     selected_events = weekly_events(events, reference=reference)
     if not selected_events:
-        logging.info("На текущую неделю нет событий для опроса")
-        return
+        logging.info("На период до следующего понедельника нет событий для опроса")
+        return False
 
-    chunks = [selected_events[index:index + 11] for index in range(0, len(selected_events), 11)]
+    # Telegram допускает максимум 12 вариантов. Оставляем два места:
+    # для собственного варианта и для ответа «не иду».
+    chunks = [
+        selected_events[index:index + 10]
+        for index in range(0, len(selected_events), 10)
+    ]
     total_parts = len(chunks)
 
     for part_number, chunk in enumerate(chunks, start=1):
         options = [poll_option_text(event) for event in chunk]
-        options.append("❌ На этой неделе не иду" if total_parts == 1 else "❌ Ничего из этой части")
+        options.append("✍️ Свой вариант — напишу в чат")
+        options.append(
+            "❌ Не иду никуда"
+            if total_parts == 1
+            else "❌ Ничего из этой части"
+        )
 
-        question = "⚽ Кто куда идёт на квиз на этой неделе?"
+        question = "⚽ Кто куда идёт до следующего понедельника включительно?"
         if total_parts > 1:
             question += f" Часть {part_number}/{total_parts}"
 
@@ -401,6 +398,7 @@ async def send_weekly_poll(
         chat_id,
         len(selected_events),
     )
+    return True
 
 
 async def send_quiz_schedule(
@@ -506,7 +504,8 @@ async def handle_training(message: types.Message) -> None:
 async def handle_training_start(callback: CallbackQuery) -> None:
     if callback.message.chat.type != ChatType.PRIVATE:
         await callback.answer(
-            "Тренировка запускается только в личном чате с ботом. Нажмите новую кнопку в расписании.",
+            "Тренировка запускается только в личном чате с ботом. "
+            "Нажмите новую кнопку в расписании.",
             show_alert=True,
         )
         return
@@ -528,7 +527,10 @@ async def handle_training_answer(callback: CallbackQuery) -> None:
     user_id = callback.from_user.id
     session = training_sessions.get(user_id)
     if not session:
-        await callback.answer("Запустите новую тренировку командой /training", show_alert=True)
+        await callback.answer(
+            "Запустите новую тренировку командой /training",
+            show_alert=True,
+        )
         return
 
     selected = int(callback.data.rsplit(":", 1)[1])
@@ -538,7 +540,11 @@ async def handle_training_answer(callback: CallbackQuery) -> None:
         session["score"] += 1
 
     correct_answer = html.escape(question["options"][question["correct"]])
-    result = "✅ Правильно!" if correct else f"❌ Неверно. Правильный ответ: {correct_answer}"
+    result = (
+        "✅ Правильно!"
+        if correct
+        else f"❌ Неверно. Правильный ответ: {correct_answer}"
+    )
     source_note = (
         f"\n\n📚 Источник: {html.escape(question.get('source', 'не указан'))}"
         f"\nЛицензия: {html.escape(question.get('license', 'не указана'))}"
@@ -579,7 +585,19 @@ async def handle_schedule(message: types.Message) -> None:
 async def handle_weekpoll(message: types.Message) -> None:
     try:
         events = await asyncio.to_thread(fetch_quiz_events)
-        await send_weekly_poll(events, chat_id=message.chat.id)
+        created = await send_weekly_poll(events, chat_id=message.chat.id)
+        if created:
+            try:
+                await message.delete()
+            except Exception:
+                logging.exception(
+                    "Опрос создан, но не удалось удалить команду /weekpoll. "
+                    "Проверьте право бота на удаление сообщений."
+                )
+        else:
+            await message.answer(
+                "ℹ️ До следующего понедельника включительно квизов не найдено."
+            )
     except Exception:
         logging.exception("Не удалось создать недельный опрос")
         await message.answer("❌ Не удалось создать опрос по расписанию.")
@@ -609,7 +627,7 @@ async def on_startup() -> None:
         [
             types.BotCommand(command="training", description="Открыть командный тренажёр"),
             types.BotCommand(command="schedule", description="Показать расписание квизов"),
-            types.BotCommand(command="weekpoll", description="Создать опрос на эту неделю"),
+            types.BotCommand(command="weekpoll", description="Создать опрос до следующего понедельника"),
             types.BotCommand(command="help", description="Справка"),
         ]
     )
